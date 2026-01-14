@@ -1,9 +1,9 @@
-import 'dotenv/config'
-import fs from 'fs'
-import path from 'path'
-import express from 'express'
-import { Telegraf, Markup } from 'telegraf'
-import fetch from 'node-fetch'
+require('dotenv/config')
+const fs = require('fs')
+const path = require('path')
+const express = require('express')
+const { Telegraf, Markup } = require('telegraf')
+const fetch = require('node-fetch')
 
 const BOT_TOKEN = process.env.BOT_TOKEN
 const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'fusuges').toLowerCase()
@@ -31,6 +31,7 @@ ensureFile(SERVICES_PATH, { items: [] })
 function readNewsDB() {
   return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'))
 }
+
 function writeNewsDB(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8')
 }
@@ -68,151 +69,127 @@ function setNewsStatus(postId, status) {
   return p
 }
 
-function pendingNews(limit = 10) {
-  const db = readNewsDB()
-  return db.posts.filter(p => p.status === 'pending').slice(0, limit)
-}
-
-function approvedNews() {
-  const db = readNewsDB()
-  return db.posts.filter(p => p.status === 'approved').slice(0, 100)
-}
-
-async function getFilePath(fileId) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`
-  const res = await fetch(url)
-  const data = await res.json()
-  if (!data.ok || !data.result || !data.result.file_path) return null
-  return data.result.file_path
-}
-
-const app = express()
-app.use(express.static(path.join(process.cwd(), 'public')))
-
-app.get('/api/news', async (req, res) => {
-  const posts = approvedNews()
-  const withPhotoUrls = []
-  for (const p of posts) {
-    let photoUrl = null
-    if (p.photoFileId) {
-      const filePath = await getFilePath(p.photoFileId).catch(() => null)
-      if (filePath) {
-        photoUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`
-      }
-    }
-    withPhotoUrls.push({ ...p, photoUrl })
-  }
-  res.json({ ok: true, posts: withPhotoUrls })
-})
-
-app.listen(PORT, () => console.log(`Web on http://localhost:${PORT}`))
-
 const bot = new Telegraf(BOT_TOKEN)
 
-function webAppButton() {
-  return Markup.keyboard([
-    Markup.button.webApp('Открыть ленту района', WEBAPP_URL)
-  ]).resize()
-}
+const userStates = new Map()
 
-bot.start(async (ctx) => {
+bot.start(async ctx => {
+  userStates.delete(ctx.from.id)
   await ctx.reply(
-    'Отправь текст или фото — это предложение новости.\n' +
-    'Все новости после одобрения попадают в общую ленту.',
-    webAppButton()
+    'Добро пожаловать! 👋\n\nИспользуйте кнопку ниже, чтобы открыть приложение:',
+    Markup.keyboard([
+      [Markup.button.webApp('📱 Открыть приложение', WEBAPP_URL)]
+    ]).resize()
+  )
+  await ctx.reply(
+    'Или отправьте новость текстом (можно с фото):',
+    { reply_markup: { remove_keyboard: true } }
   )
 })
 
-bot.on('text', async (ctx) => {
-  const text = ctx.message.text || ''
-  await handleCreateNews(ctx, text, null)
-})
-
-bot.on('photo', async (ctx) => {
-  const photos = ctx.message.photo || []
-  if (!photos.length) return
-  const biggest = photos[photos.length - 1]
-  const caption = ctx.message.caption || ''
-  await handleCreateNews(ctx, caption, biggest.file_id)
-})
-
-async function handleCreateNews(ctx, text, photoFileId) {
+bot.on('photo', async ctx => {
+  const userId = ctx.from.id
   const isAdmin = isAdminUser(ctx.from)
-  const post = addNews({
-    text: text || '',
-    author: ctx.from,
-    isAdmin,
-    photoFileId
-  })
+  const caption = ctx.message.caption || ''
+  const photoFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id
+
+  if (caption.trim()) {
+    const post = addNews({ text: caption, author: ctx.from, isAdmin, photoFileId })
+
+    if (isAdmin) {
+      await ctx.reply('✅ Новость опубликована!')
+    } else {
+      await ctx.reply('📩 Новость отправлена на проверку. Ожидайте одобрения администратора.')
+
+      try {
+        const adminMessage = await ctx.telegram.sendPhoto(
+          ctx.botInfo.id,
+          photoFileId,
+          {
+            caption: `📬 Новая новость #${post.id} от ${post.authorName}${post.authorUsername ? ' (@' + post.authorUsername + ')' : ''}:\n\n${post.text}`,
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Одобрить', callback_data: `approve:${post.id}` },
+                { text: '❌ Отклонить', callback_data: `reject:${post.id}` }
+              ]]
+            }
+          }
+        )
+      } catch (err) {
+        console.error('Failed to notify admin:', err)
+      }
+    }
+  } else {
+    userStates.set(userId, { photoFileId })
+    await ctx.reply('🖼 Фото получено! Теперь отправьте текст новости:')
+  }
+})
+
+bot.on('text', async ctx => {
+  const userId = ctx.from.id
+  const isAdmin = isAdminUser(ctx.from)
+  const text = ctx.message.text
+
+  if (text.startsWith('/')) return
+
+  const state = userStates.get(userId)
+  const photoFileId = state?.photoFileId || null
+  userStates.delete(userId)
+
+  const post = addNews({ text, author: ctx.from, isAdmin, photoFileId })
 
   if (isAdmin) {
-    await ctx.reply(`Новость опубликована как админ. ID=${post.id}`)
+    await ctx.reply('✅ Новость опубликована!')
   } else {
-    await ctx.reply(`Новость отправлена на модерацию. ID=${post.id}`)
-  }
+    await ctx.reply('📩 Новость отправлена на проверку. Ожидайте одобрения администратора.')
 
-  const caption =
-    `Новая новость #${post.id}\n` +
-    `Автор: ${post.authorName} (@${post.authorUsername || 'нет'})\n` +
-    `Статус: ${post.status}\n\n` +
-    (post.text || '(без текста)')
-
-  const buttons = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('✅ Одобрить', `approve:${post.id}`),
-      Markup.button.callback('❌ Отклонить', `reject:${post.id}`)
-    ]
-  ])
-
-  if (post.photoFileId) {
-    await bot.telegram.sendPhoto(
-      `@${ADMIN_USERNAME}`,
-      post.photoFileId,
-      { caption, reply_markup: buttons.reply_markup }
-    )
-  } else {
-    await bot.telegram.sendMessage(
-      `@${ADMIN_USERNAME}`,
-      caption,
-      buttons
-    )
-  }
-}
-
-bot.command('pending', async (ctx) => {
-  if (!isAdminUser(ctx.from)) return ctx.reply('Нет доступа.')
-  const list = pendingNews(10)
-  if (!list.length) return ctx.reply('Нет новостей на проверке.')
-
-  for (const p of list) {
-    const caption =
-      `#${p.id} от ${p.authorName} (@${p.authorUsername || 'нет'})\n\n` +
-      (p.text || '(без текста)')
-    const buttons = Markup.inlineKeyboard([
-      [
-        Markup.button.callback('✅ Одобрить', `approve:${p.id}`),
-        Markup.button.callback('❌ Отклонить', `reject:${p.id}`)
-      ]
-    ])
-
-    if (p.photoFileId) {
-      await ctx.replyWithPhoto(p.photoFileId, { caption, reply_markup: buttons.reply_markup })
-    } else {
-      await ctx.reply(caption, buttons)
+    try {
+      if (photoFileId) {
+        await ctx.telegram.sendPhoto(
+          ctx.botInfo.id,
+          photoFileId,
+          {
+            caption: `📬 Новая новость #${post.id} от ${post.authorName}${post.authorUsername ? ' (@' + post.authorUsername + ')' : ''}:\n\n${post.text}`,
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Одобрить', callback_data: `approve:${post.id}` },
+                { text: '❌ Отклонить', callback_data: `reject:${post.id}` }
+              ]]
+            }
+          }
+        )
+      } else {
+        await ctx.telegram.sendMessage(
+          ctx.botInfo.id,
+          `📬 Новая новость #${post.id} от ${post.authorName}${post.authorUsername ? ' (@' + post.authorUsername + ')' : ''}:\n\n${post.text}`,
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Одобрить', callback_data: `approve:${post.id}` },
+                { text: '❌ Отклонить', callback_data: `reject:${post.id}` }
+              ]]
+            }
+          }
+        )
+      }
+    } catch (err) {
+      console.error('Failed to notify admin:', err)
     }
   }
 })
 
-bot.on('callback_query', async (ctx) => {
+bot.on('callback_query', async ctx => {
   const data = ctx.callbackQuery.data || ''
   const from = ctx.from
+
   if (!isAdminUser(from)) {
-    await ctx.answerCbQuery('Нет доступа', { show_alert: true })
+    await ctx.answerCbQuery('Нет доступа!', { show_alert: true })
     return
   }
 
   const [action, idStr] = data.split(':')
   const postId = Number(idStr)
+
   if (!postId) {
     await ctx.answerCbQuery('Некорректный id')
     return
@@ -225,6 +202,7 @@ bot.on('callback_query', async (ctx) => {
       await ctx.answerCbQuery('Не найдено')
       return
     }
+
     await ctx.answerCbQuery(newStatus === 'approved' ? 'Одобрено' : 'Отклонено')
 
     const resultText =
@@ -241,3 +219,17 @@ bot.on('callback_query', async (ctx) => {
 
 bot.launch()
 console.log('Bot started')
+
+const app = express()
+app.use(express.json())
+app.use(express.static('public'))
+
+app.get('/api/news', (req, res) => {
+  const db = readNewsDB()
+  const approved = db.posts.filter(p => p.status === 'approved')
+  res.json({ posts: approved })
+})
+
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`)
+})
