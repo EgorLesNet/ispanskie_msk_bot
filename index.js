@@ -133,7 +133,7 @@ bot.on('text', async ctx => {
   if (text.startsWith('/')) return
 
   const state = userStates.get(userId)
-  const photoFileId = state?.photoFileId || null
+  const photoFileId = (state && state.photoFileId) || null
   userStates.delete(userId)
 
   const post = addNews({ text, author: ctx.from, isAdmin, photoFileId })
