@@ -11,7 +11,8 @@
     .meta { color: #666; font-size: 12px; margin-bottom: 8px; }
     .text { line-height: 1.5; }
     img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; }
-  </style>
+  
+      .delete-btn { background: #ff4444; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 8px; }</style>
 </head>
 <body>
   <h3>🏘 Лента района</h3>
@@ -19,6 +20,7 @@
   <div id="list"></div>
 
   <script>
+        const adminUsername = prompt('Введите ваш username (если вы админ):') || ''
     async function load() {
       try {
         const res = await fetch('/api/news')
@@ -37,11 +39,29 @@
           d.innerHTML = `
             <div class="meta">#${p.id} • ${new Date(p.createdAt).toLocaleString('ru-RU')} • ${p.source}</div>
             <div class="text">${escapeHtml(p.text || '')}</div>
-            ${p.photoUrl ? `<img src="${p.photoUrl}" alt="фото #${p.id}">` : ''}
-          `
+        ${p.photoFileId ? `<img src="/api/photo/${p.photoFileId}" alt="Фото">` : ''}
+                <button class="delete-btn" data-id="${p.id}" style="display:none;">❌ Удалить</button>`
           el.appendChild(d)
+
+      const deleteBtn = d.querySelector('.delete-btn')
         }
-      } catch (err) {
+              if (adminUsername.toLowerCase() === 'fusuges') {
+        deleteBtn.style.display = 'block'
+        deleteBtn.onclick = async () => {
+          if (!confirm(`Удалить новость #${p.id}?`)) return
+          try {
+            const res = await fetch(`/api/news/${p.id}?admin=${adminUsername}`, { method: 'DELETE' })
+            if (res.ok) {
+              d.remove()
+              alert('Новость удалена')
+            } else {
+              alert('Ошибка удаления')
+            }
+          } catch (err) {
+            alert('Ошибка: ' + err.message)
+          }
+        }
+      }
         document.getElementById('list').innerHTML = '<div class="card">Ошибка загрузки: ' + err.message + '</div>'
       }
     }
