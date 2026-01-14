@@ -69,6 +69,15 @@ function setNewsStatus(postId, status) {
   return p
 }
 
+function deleteNews(postId) {
+  const db = readNewsDB()
+  const index = db.posts.findIndex(x => x.id === postId)
+  if (index === -1) return null
+  const deleted = db.posts.splice(index, 1)[0]
+  writeNewsDB(db)
+  return deleted
+}
+
 const bot = new Telegraf(BOT_TOKEN)
 
 const userStates = new Map()
@@ -227,6 +236,36 @@ app.get('/api/news', (req, res) => {
   const db = readNewsDB()
   const approved = db.posts.filter(p => p.status === 'approved')
   res.json({ posts: approved })
+})
+
+app.delete('/api/news/:id', (req, res) => {
+  const postId = Number(req.params.id)
+  const adminUsername = req.query.admin
+  
+  if (!adminUsername || adminUsername.toLowerCase() !== ADMIN_USERNAME) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  
+  const deleted = deleteNews(postId)
+  if (!deleted) {
+    return res.status(404).json({ error: 'Not found' })
+  }
+  
+  res.json({ success: true, deleted })
+})
+
+app.get('/api/photo/:fileId', async (req, res) => {
+  const fileId = req.params.fileId
+  try {
+    const fileUrl = await bot.telegram.getFileLink(fileId)
+    const response = await fetch(fileUrl)
+    const buffer = await response.buffer()
+    res.set('Content-Type', response.headers.get('content-type'))
+    res.send(buffer)
+  } catch (err) {
+    console.error('Failed to get photo:', err)
+    res.status(500).json({ error: 'Failed to get photo' })
+  }
 })
 
 app.listen(PORT, () => {
